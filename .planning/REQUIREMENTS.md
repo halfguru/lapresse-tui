@@ -81,21 +81,21 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| NAV-01 | — | Pending |
-| NAV-02 | — | Pending |
-| NAV-03 | — | Pending |
-| READ-01 | — | Pending |
-| READ-02 | — | Pending |
-| READ-03 | — | Pending |
-| DATA-01 | — | Pending |
-| DATA-02 | — | Pending |
-| ANLY-01 | — | Pending |
+| NAV-01 | Phase 2 | Pending |
+| NAV-02 | Phase 2 | Pending |
+| NAV-03 | Phase 2 | Pending |
+| READ-01 | Phase 4 | Pending |
+| READ-02 | Phase 4 | Pending |
+| READ-03 | Phase 4 | Pending |
+| DATA-01 | Phase 3 | Pending |
+| DATA-02 | Phase 1 | Pending |
+| ANLY-01 | Phase 5 | Pending |
 
 **Coverage:**
 - v1 requirements: 9 total
-- Mapped to phases: 0
-- Unmapped: 9 ⚠️
+- Mapped to phases: 9
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-04-13*
-*Last updated: 2026-04-13 after initial definition*
+*Last updated: 2026-04-13 after roadmap creation*
