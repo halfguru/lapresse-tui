@@ -1,1 +1,12 @@
 /target
+*.db
+*.db-wal
+*.db-shm
+.planning/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

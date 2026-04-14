@@ -36,3 +36,29 @@ CREATE INDEX IF NOT EXISTS idx_articles_section ON articles(section);
 CREATE INDEX IF NOT EXISTS idx_images_article_id ON images(article_id);
 CREATE INDEX IF NOT EXISTS idx_sync_state_date ON sync_state(date);
 CREATE INDEX IF NOT EXISTS idx_sync_state_status ON sync_state(status);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
+    title,
+    content_text,
+    section,
+    author,
+    content=articles,
+    content_rowid=id
+);
+
+CREATE TRIGGER IF NOT EXISTS articles_ai AFTER INSERT ON articles BEGIN
+    INSERT INTO articles_fts(rowid, title, content_text, section, author)
+    VALUES (new.id, new.title, new.content_text, new.section, new.author);
+END;
+
+CREATE TRIGGER IF NOT EXISTS articles_ad AFTER DELETE ON articles BEGIN
+    INSERT INTO articles_fts(articles_fts, rowid, title, content_text, section, author)
+    VALUES ('delete', old.id, old.title, old.content_text, old.section, old.author);
+END;
+
+CREATE TRIGGER IF NOT EXISTS articles_au AFTER UPDATE ON articles BEGIN
+    INSERT INTO articles_fts(articles_fts, rowid, title, content_text, section, author)
+    VALUES ('delete', old.id, old.title, old.content_text, old.section, old.author);
+    INSERT INTO articles_fts(rowid, title, content_text, section, author)
+    VALUES (new.id, new.title, new.content_text, new.section, new.author);
+END;
