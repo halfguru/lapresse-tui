@@ -36,6 +36,26 @@ pub struct ArticleImage {
     pub height: Option<u32>,
 }
 
+pub struct NewArticle<'a> {
+    pub url: &'a str,
+    pub title: &'a str,
+    pub section: Option<&'a str>,
+    pub author: Option<&'a str>,
+    pub published_at: &'a str,
+    pub content_text: Option<&'a str>,
+    pub content_html: Option<&'a str>,
+}
+
+pub struct NewImage<'a> {
+    pub article_id: u32,
+    pub url: &'a str,
+    pub alt_text: Option<&'a str>,
+    pub data: Option<&'a [u8]>,
+    pub format: Option<&'a str>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
 pub struct Db {
     conn: Mutex<Connection>,
 }
@@ -63,8 +83,7 @@ impl Db {
 
     pub fn article_count(&self) -> Result<u32> {
         let conn = self.conn.lock().unwrap();
-        let count: u32 =
-            conn.query_row("SELECT COUNT(*) FROM articles", [], |row| row.get(0))?;
+        let count: u32 = conn.query_row("SELECT COUNT(*) FROM articles", [], |row| row.get(0))?;
         Ok(count)
     }
 
@@ -113,43 +132,25 @@ impl Db {
         Ok(counts)
     }
 
-    pub fn insert_article(
-        &self,
-        url: &str,
-        title: &str,
-        section: Option<&str>,
-        author: Option<&str>,
-        published_at: &str,
-        content_text: Option<&str>,
-        content_html: Option<&str>,
-    ) -> Result<u32> {
+    pub fn insert_article(&self, article: &NewArticle) -> Result<u32> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO articles (url, title, section, author, published_at, content_text, content_html) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![url, title, section, author, published_at, content_text, content_html],
+            rusqlite::params![article.url, article.title, article.section, article.author, article.published_at, article.content_text, article.content_html],
         )?;
         let id: u32 = conn.query_row(
             "SELECT id FROM articles WHERE url = ?1",
-            [url],
+            [article.url],
             |row| row.get(0),
         )?;
         Ok(id)
     }
 
-    pub fn insert_image(
-        &self,
-        article_id: u32,
-        url: &str,
-        alt_text: Option<&str>,
-        data: Option<&[u8]>,
-        format: Option<&str>,
-        width: Option<u32>,
-        height: Option<u32>,
-    ) -> Result<()> {
+    pub fn insert_image(&self, image: &NewImage) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO images (article_id, url, alt_text, data, format, width, height) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![article_id, url, alt_text, data, format, width, height],
+            rusqlite::params![image.article_id, image.url, image.alt_text, image.data, image.format, image.width, image.height],
         )?;
         Ok(())
     }

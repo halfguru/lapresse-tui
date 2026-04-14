@@ -122,7 +122,10 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         };
         let label = if let Some(phase) = &app.sync_phase {
             if phase.total > 0 {
-                format!(" {spinner} {}: {}/{} ", phase.phase, phase.current, phase.total)
+                format!(
+                    " {spinner} {}: {}/{} ",
+                    phase.phase, phase.current, phase.total
+                )
             } else {
                 format!(" {spinner} {}... ", phase.phase)
             }
@@ -297,13 +300,13 @@ fn render_article_list(frame: &mut Frame, app: &App, area: Rect) {
                 2 => "⣻",
                 _ => "⣷",
             };
-            let sync_date = app
-                .syncing_date
-                .map(|d| d.to_string())
-                .unwrap_or_default();
+            let sync_date = app.syncing_date.map(|d| d.to_string()).unwrap_or_default();
             if let Some(phase) = &app.sync_phase {
                 if phase.total > 0 {
-                    format!(" {spinner} {} — {}/{} for {sync_date}", phase.phase, phase.current, phase.total)
+                    format!(
+                        " {spinner} {} — {}/{} for {sync_date}",
+                        phase.phase, phase.current, phase.total
+                    )
                 } else {
                     format!(" {spinner} {} for {sync_date}...", phase.phase)
                 }
@@ -536,7 +539,7 @@ fn block_height(block: &ContentBlock, area_width: u16) -> u16 {
             let mut count = 0u16;
             for line in lines {
                 if area_width > 0 {
-                    count += (line.len() as u16 + area_width - 1) / area_width;
+                    count += (line.len() as u16).div_ceil(area_width);
                 } else {
                     count += 1;
                 }
@@ -779,7 +782,7 @@ fn render_section_picker(frame: &mut Frame, app: &App) {
     }
 
     let section_start = if scroll == 0 { 0 } else { scroll - 1 };
-    let section_end = (visible_end as usize).saturating_sub(1);
+    let section_end = visible_end.saturating_sub(1);
 
     for i in section_start..section_end.min(app.sections.len()) {
         let section = &app.sections[i];
@@ -869,10 +872,7 @@ fn render_search(frame: &mut Frame, app: &mut App) {
 
     let query_line = Line::from(vec![
         Span::styled("> ", Style::default().fg(ACCENT)),
-        Span::styled(
-            &app.search_query,
-            Style::default().fg(TEXT_PRIMARY),
-        ),
+        Span::styled(&app.search_query, Style::default().fg(TEXT_PRIMARY)),
         Span::styled("▎", Style::default().fg(ACCENT)),
     ]);
     frame.render_widget(query_line, input_inner);
@@ -893,16 +893,13 @@ fn render_search(frame: &mut Frame, app: &mut App) {
         } else {
             " No results found."
         };
-        let empty = Paragraph::new(Line::from(Span::styled(
-            msg,
-            Style::default().fg(TEXT_DIM),
-        )))
-        .style(Style::default().bg(BG))
-        .block(
-            Block::default()
-                .borders(Borders::NONE)
-                .style(Style::default().bg(BG)),
-        );
+        let empty = Paragraph::new(Line::from(Span::styled(msg, Style::default().fg(TEXT_DIM))))
+            .style(Style::default().bg(BG))
+            .block(
+                Block::default()
+                    .borders(Borders::NONE)
+                    .style(Style::default().bg(BG)),
+            );
         frame.render_widget(empty, main_area);
         frame.render_widget(hint, status_area);
         return;
@@ -930,7 +927,13 @@ fn render_search(frame: &mut Frame, app: &mut App) {
             let row_bg = if i % 2 == 0 { BG } else { BG_LIGHTER };
             let title = Span::styled(&article.title, Style::default().fg(TEXT_PRIMARY).bg(row_bg));
 
-            let mut spans = vec![title, Span::raw("  "), section_span, Span::raw(" "), date_span];
+            let mut spans = vec![
+                title,
+                Span::raw("  "),
+                section_span,
+                Span::raw(" "),
+                date_span,
+            ];
             if i % 2 == 1 {
                 spans.push(Span::styled("", Style::default().bg(BG_LIGHTER)));
             }
@@ -1094,4 +1097,14 @@ fn month_name(month: u8) -> &'static str {
         12 => "December",
         _ => "???",
     }
+}
+
+#[cfg(test)]
+pub fn month_name_for_test(month: u8) -> &'static str {
+    month_name(month)
+}
+
+#[cfg(test)]
+pub fn format_scroll_indicator_for_test(pct: u32, scrollable: bool) -> String {
+    format_scroll_indicator(pct, scrollable)
 }

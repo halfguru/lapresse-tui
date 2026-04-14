@@ -3,8 +3,8 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use time::{Date, Month, OffsetDateTime};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,7 +92,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(db: Db, db_path: PathBuf, picker: Picker, protocol_type: ProtocolType) -> anyhow::Result<Self> {
+    pub fn new(
+        db: Db,
+        db_path: PathBuf,
+        picker: Picker,
+        protocol_type: ProtocolType,
+    ) -> anyhow::Result<Self> {
         let db = Arc::new(db);
         let article_count = db.article_count()?;
         let selected_date = OffsetDateTime::now_utc().date();
@@ -310,12 +315,14 @@ impl App {
             }
             KeyCode::Char('k') => {
                 if filtered_len > 0 {
-                    self.article_list_selected =
-                        self.article_list_selected.saturating_sub(1);
+                    self.article_list_selected = self.article_list_selected.saturating_sub(1);
                 }
             }
             KeyCode::Char('g') => {
-                if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT)
+                {
                     self.article_list_selected = filtered_len.saturating_sub(1);
                 } else {
                     self.article_list_selected = 0;
@@ -371,17 +378,21 @@ impl App {
                 }
             }
             KeyCode::Char('d') => {
-                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                    if let Some(ref mut reader) = self.reader {
-                        reader.scroll_offset = reader.scroll_offset.saturating_add(10);
-                    }
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)
+                    && let Some(ref mut reader) = self.reader
+                {
+                    reader.scroll_offset = reader.scroll_offset.saturating_add(10);
                 }
             }
             KeyCode::Char('u') => {
-                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                    if let Some(ref mut reader) = self.reader {
-                        reader.scroll_offset = reader.scroll_offset.saturating_sub(10);
-                    }
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)
+                    && let Some(ref mut reader) = self.reader
+                {
+                    reader.scroll_offset = reader.scroll_offset.saturating_sub(10);
                 }
             }
             KeyCode::Char('g') => {
@@ -573,19 +584,18 @@ impl App {
         self.syncing_date = Some(date);
         self.sync_phase = None;
 
-        let naive_date = chrono::NaiveDate::from_ymd_opt(
-            date.year(),
-            date.month() as u32,
-            date.day() as u32,
-        )
-        .unwrap();
+        let naive_date =
+            chrono::NaiveDate::from_ymd_opt(date.year(), date.month() as u32, date.day() as u32)
+                .unwrap();
 
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
-            let _ = rt.block_on(crate::sync::sync_single_day_with_progress(db, naive_date, tx));
+            let _ = rt.block_on(crate::sync::sync_single_day_with_progress(
+                db, naive_date, tx,
+            ));
         });
     }
 
@@ -604,7 +614,9 @@ impl App {
         year = year.clamp(2005, 2026);
         if let Ok(d) = Date::from_calendar_date(year, Month::try_from(month as u8).unwrap(), 1) {
             let day = date.day().min(days_in_month(year, month as u8));
-            if let Ok(new_date) = Date::from_calendar_date(year, Month::try_from(month as u8).unwrap(), day) {
+            if let Ok(new_date) =
+                Date::from_calendar_date(year, Month::try_from(month as u8).unwrap(), day)
+            {
                 self.selected_date = new_date;
                 self.refresh_articles();
             } else {
@@ -630,13 +642,17 @@ impl App {
             for _ in 0..delta {
                 self.selected_date = self.selected_date.next_day().unwrap_or(self.selected_date);
                 if self.selected_date.year() > 2026 {
-                    self.selected_date = Date::from_calendar_date(2026, Month::December, 31).unwrap();
+                    self.selected_date =
+                        Date::from_calendar_date(2026, Month::December, 31).unwrap();
                     break;
                 }
             }
         } else {
             for _ in 0..delta.abs() {
-                self.selected_date = self.selected_date.previous_day().unwrap_or(self.selected_date);
+                self.selected_date = self
+                    .selected_date
+                    .previous_day()
+                    .unwrap_or(self.selected_date);
                 if self.selected_date.year() < 2005 {
                     self.selected_date = Date::from_calendar_date(2005, Month::January, 1).unwrap();
                     break;

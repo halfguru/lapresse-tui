@@ -9,7 +9,7 @@ use tokio::task::JoinSet;
 use url::Url;
 
 use crate::app::{SyncMsg, SyncPhase, SyncPhaseKind};
-use crate::db::Db;
+use crate::db::{Db, NewArticle, NewImage};
 
 const BASE_URL: &str = "https://www.lapresse.ca";
 const REQUEST_DELAY: Duration = Duration::from_millis(500);
@@ -328,20 +328,15 @@ async fn scrape_article_metadata(
     let html = fetch_page(client, &link.url).await?;
     let parsed = parse_article_page(&html, &link.url)?;
 
-    let section = parsed.section.as_deref();
-    let author = parsed.author.as_deref();
-    let content_text = parsed.content_text.as_deref();
-    let content_html = parsed.content_html.as_deref();
-
-    let article_id = db.insert_article(
-        &link.url,
-        &parsed.title,
-        section,
-        author,
-        &parsed.published_at,
-        content_text,
-        content_html,
-    )?;
+    let article_id = db.insert_article(&NewArticle {
+        url: &link.url,
+        title: &parsed.title,
+        section: parsed.section.as_deref(),
+        author: parsed.author.as_deref(),
+        published_at: &parsed.published_at,
+        content_text: parsed.content_text.as_deref(),
+        content_html: parsed.content_html.as_deref(),
+    })?;
 
     let pending_images: Vec<PendingImage> = parsed
         .images
@@ -375,15 +370,15 @@ async fn download_and_store_image(
         (None, None)
     };
 
-    db.insert_image(
-        pending.article_id,
-        &pending.url,
-        pending.alt_text.as_deref(),
-        blob_data,
-        None,
+    db.insert_image(&NewImage {
+        article_id: pending.article_id,
+        url: &pending.url,
+        alt_text: pending.alt_text.as_deref(),
+        data: blob_data,
+        format: None,
         width,
         height,
-    )?;
+    })?;
 
     Ok(())
 }
@@ -555,4 +550,37 @@ pub async fn sync_single_day_with_progress(
             Err(e)
         }
     }
+}
+
+#[cfg(test)]
+pub fn parse_day_page_for_test(html: &str) -> Result<Vec<(String, String, Option<String>)>> {
+    let links = parse_day_page(html)?;
+    Ok(links
+        .into_iter()
+        .map(|l| (l.url, l.title, l.time))
+        .collect())
+}
+
+#[cfg(test)]
+pub fn parse_article_page_for_test(
+    html: &str,
+    url: &str,
+) -> Result<(
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    Option<String>,
+    Vec<(String, Option<String>)>,
+)> {
+    let p = parse_article_page(html, url)?;
+    let images = p.images.into_iter().map(|i| (i.url, i.alt_text)).collect();
+    Ok((
+        p.title,
+        p.section,
+        p.author,
+        p.published_at,
+        p.content_text,
+        images,
+    ))
 }

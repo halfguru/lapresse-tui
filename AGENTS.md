@@ -113,13 +113,47 @@ A terminal-based La Presse archive reader and analytics dashboard built in Rust 
 <!-- GSD:conventions-start source:CONVENTIONS.md -->
 ## Conventions
 
-Conventions not yet established. Will populate as patterns emerge during development.
+- **Rust edition 2024** — use let-chains in `if`/`while`, `gen` blocks, etc.
+- **Error handling**: `anyhow::Result` everywhere; `.context()` for wrapping errors
+- **DB access**: `Db` wraps `Mutex<Connection>`; share via `Arc<Db>` across threads
+- **Sync threading**: `std::thread::spawn` + inner `tokio::current_thread` runtime; `std::sync::mpsc` channels for progress
+- **No comments** in code unless explicitly asked
+- **DB insert functions** take `&NewArticle` / `&NewImage` structs instead of many individual params
+- **Test-visible helpers**: `#[cfg(test)] pub fn *_for_test()` wrappers expose private parsing logic
+- **Cache dir**: `~/.cache/lapresse-tui/` with `lapresse-tui.db` and `lapresse-tui.log`
+- **Binary name / brand**: `lapresse-tui`
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
 ## Architecture
 
-Architecture not yet mapped. Follow existing patterns found in the codebase.
+### Source Layout
+```
+src/main.rs   — CLI entry point (TUI or bulk sync subcommand)
+src/app.rs    — App state machine, key handling, sync orchestration
+src/ui.rs     — ratatui rendering (calendar, article list, reader, search)
+src/db.rs     — SQLite persistence (articles, images, sync_state, FTS5 search)
+src/sync.rs   — Scraping engine with concurrent article/image fetching
+migrations/   — SQL schema (V1__initial_schema.sql)
+```
+
+### Data Flow
+1. **Startup**: `main.rs` opens DB, creates `Picker`, initializes `App`. If DB has 0 articles, auto-sync fires.
+2. **Event loop**: 250ms poll cycle — `poll_sync()` checks channel, then `terminal.draw()` renders, then `crossterm::event::poll()` waits for key input.
+3. **Sync thread**: `trigger_sync()` spawns a `std::thread` with an inner `tokio::current_thread` runtime. Uses `std::sync::mpsc::Sender<SyncMsg>` for progress. Three phases: FetchingIndex → ScrapingArticles → DownloadingImages.
+4. **Rendering**: `ui::render()` dispatches based on `Focus` enum (Calendar, ArticleList, ArticleReader, Search). Article reader uses virtual scrolling with `ContentBlock` abstraction (Text/Image blocks).
+
+### Key Types
+- `App` — top-level state (focus, articles, sync status, search, filters)
+- `Db` — `Mutex<Connection>` wrapper, shared as `Arc<Db>`
+- `NewArticle` / `NewImage` — parameter structs for DB inserts
+- `SyncMsg` — channel messages (Started, Progress, Done, Failed)
+- `ArticleReaderState` — loaded article with decoded image protocols
+
+### Concurrency
+- Sync uses `JoinSet` with `Semaphore` for bounded concurrency (8 article workers, 8 image workers)
+- 500ms inter-request delay to be respectful to lapresse.ca
+- DB is thread-safe via `Mutex<Connection>` inside `Arc<Db>`
 <!-- GSD:architecture-end -->
 
 <!-- GSD:skills-start source:skills/ -->
