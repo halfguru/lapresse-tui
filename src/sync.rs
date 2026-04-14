@@ -562,6 +562,7 @@ pub fn parse_day_page_for_test(html: &str) -> Result<Vec<(String, String, Option
 }
 
 #[cfg(test)]
+#[allow(clippy::type_complexity)]
 pub fn parse_article_page_for_test(
     html: &str,
     url: &str,
