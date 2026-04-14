@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: Ready to discuss
-stopped_at: Phase 2 context gathered
-last_updated: "2026-04-14T02:08:59.113Z"
-last_activity: 2026-04-13 — Phase 1 implemented directly, advancing to Phase 2
+stopped_at: Phase 3 context gathered
+last_updated: "2026-04-14T11:29:32.349Z"
+last_activity: 2026-04-14 — Phase 2 implemented directly, advancing to Phase 3
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
-  percent: 20
+  percent: 40
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-13)
 
 **Core value:** Reading La Presse articles with images, right in your terminal.
-**Current focus:** Phase 2 — Core Navigation
+**Current focus:** Phase 3 — Scraping Pipeline
 
 ## Current Position
 
-Phase: 2 of 5 (Core Navigation)
+Phase: 3 of 5 (Scraping Pipeline)
 Plan: 0 of ? in current phase
 Status: Ready to discuss
-Last activity: 2026-04-13 — Phase 1 implemented directly, advancing to Phase 2
+Last activity: 2026-04-14 — Phase 2 implemented directly, advancing to Phase 3
 
-Progress: [██░░░░░░░░] 20%
+Progress: [████░░░░░░] 40%
 
 ## Performance Metrics
 
@@ -44,7 +44,8 @@ Progress: [██░░░░░░░░] 20%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 1. Foundation & Data Layer | direct | - | - | - | - |
+| 1. Foundation & Data Layer | direct | - | - |
+| 2. Core Navigation | direct | - | - |
 
 **Recent Trend:**
 
@@ -64,6 +65,7 @@ Recent decisions affecting current work:
 - Architecture: TEA pattern with async extensions, tokio mpsc channels for background workers
 - Stack: ratatui 0.30 + ratatui-image 10.0 + crossterm 0.29 (locked version trio)
 - ratatui-image: disable default features, use only ["crossterm", "image-defaults"] — avoids libchafa system dependency
+- Calendar: ratatui Monthly widget with time crate, density highlights on calendar grid
 
 ### Pending Todos
 
@@ -76,6 +78,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-14T02:08:59.110Z
-Stopped at: Phase 2 context gathered
-Resume file: .planning/phases/02-core-navigation/02-CONTEXT.md
+Last session: 2026-04-14T11:29:32.344Z
+Stopped at: Phase 3 context gathered
+Resume file: .planning/phases/03-scraping-pipeline/03-CONTEXT.md
