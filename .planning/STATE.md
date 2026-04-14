@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-04-13)
 
 **Core value:** Reading La Presse articles with images, right in your terminal.
-**Current focus:** Phase 1 — Foundation & Data Layer
+**Current focus:** Phase 2 — Core Navigation
 
 ## Current Position
 
-Phase: 1 of 5 (Foundation & Data Layer)
+Phase: 2 of 5 (Core Navigation)
 Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-04-13 — Roadmap created
+Status: Ready to discuss
+Last activity: 2026-04-13 — Phase 1 implemented directly, advancing to Phase 2
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██░░░░░░░░] 20%
 
 ## Performance Metrics
 
@@ -27,7 +27,7 @@ Progress: [░░░░░░░░░░] 0%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 1. Foundation & Data Layer | direct | - | - | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -45,6 +45,7 @@ Recent decisions affecting current work:
 - Roadmap: Storage before views, views before scraping, scraping before images, analytics last
 - Architecture: TEA pattern with async extensions, tokio mpsc channels for background workers
 - Stack: ratatui 0.30 + ratatui-image 10.0 + crossterm 0.29 (locked version trio)
+- ratatui-image: disable default features, use only ["crossterm", "image-defaults"] — avoids libchafa system dependency
 
 ### Pending Todos
 
@@ -58,5 +59,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-04-13
-Stopped at: Roadmap created, ready to plan Phase 1
+Stopped at: Phase 1 complete, ready to discuss Phase 2
 Resume file: None

@@ -12,7 +12,7 @@ Build a terminal-based La Presse archive reader that renders articles with inlin
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation & Data Layer** - App skeleton, SQLite schema, event loop, panic hooks, image protocol detection
+- [x] **Phase 1: Foundation & Data Layer** - App skeleton, SQLite schema, event loop, panic hooks, image protocol detection
 - [ ] **Phase 2: Core Navigation** - Calendar-driven browsing, article list, status bar, vim keybindings
 - [ ] **Phase 3: Scraping Pipeline** - Rate-limited scraper for lapresse.ca/archives, sync state tracking, offline population
 - [ ] **Phase 4: Article Reader with Images** - Full article text, inline images via ratatui-image, graceful degradation
@@ -83,7 +83,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation & Data Layer | 0/? | Not started | - |
+| 1. Foundation & Data Layer | direct | Complete | 2026-04-13 |
 | 2. Core Navigation | 0/? | Not started | - |
 | 3. Scraping Pipeline | 0/? | Not started | - |
 | 4. Article Reader with Images | 0/? | Not started | - |
