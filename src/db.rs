@@ -66,19 +66,26 @@ impl Db {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+        )?;
         conn.execute_batch(SCHEMA_SQL)?;
         conn.execute(
             "UPDATE sync_state SET status = 'pending' WHERE status = 'in_progress'",
             [],
         )?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    pub fn rebuild_fts(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO articles_fts(articles_fts) VALUES ('rebuild')",
             [],
         )?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+        Ok(())
     }
 
     pub fn article_count(&self) -> Result<u32> {
@@ -151,6 +158,21 @@ impl Db {
         conn.execute(
             "INSERT OR IGNORE INTO images (article_id, url, alt_text, data, format, width, height) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![image.article_id, image.url, image.alt_text, image.data, image.format, image.width, image.height],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_image_data(
+        &self,
+        image_id: u32,
+        data: &[u8],
+        width: Option<u32>,
+        height: Option<u32>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE images SET data = ?1, width = ?2, height = ?3 WHERE id = ?4",
+            rusqlite::params![data, width, height, image_id],
         )?;
         Ok(())
     }
@@ -257,6 +279,18 @@ impl Db {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Some(a))
             }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn get_image_data(&self, image_id: u32) -> Result<Option<Vec<u8>>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row("SELECT data FROM images WHERE id = ?1", [image_id], |row| {
+            row.get::<_, Vec<u8>>(0)
+        });
+        match result {
+            Ok(data) => Ok(Some(data)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }

@@ -47,16 +47,29 @@ impl std::fmt::Display for SyncPhaseKind {
     }
 }
 
+#[derive(Debug)]
+pub enum ImageLoadMsg {
+    Loaded(usize, Vec<u8>),
+    Failed(usize),
+}
+
 #[allow(dead_code)]
 pub struct ImageState {
     pub protocol: StatefulProtocol,
     pub alt_text: Option<String>,
 }
 
+pub enum ImageLoadState {
+    Loading,
+    Loaded(Box<ImageState>),
+    Failed,
+}
+
 pub struct ArticleReaderState {
     pub article: FullArticle,
-    pub images: Vec<Option<ImageState>>,
+    pub images: Vec<ImageLoadState>,
     pub scroll_offset: u16,
+    pub image_load_rx: Option<Receiver<ImageLoadMsg>>,
 }
 
 #[allow(dead_code)]
@@ -141,6 +154,56 @@ impl App {
         if self.syncing {
             self.sync_spinner = (self.sync_spinner + 1) % 4;
         }
+
+        if let Some(ref mut reader) = self.reader
+            && let Some(rx) = reader.image_load_rx.take()
+        {
+            loop {
+                match rx.try_recv() {
+                    Ok(ImageLoadMsg::Loaded(idx, data)) => {
+                        if idx < reader.images.len() {
+                            match image::ImageReader::new(std::io::Cursor::new(&data))
+                                .with_guessed_format()
+                            {
+                                Ok(rdr) => {
+                                    if let Ok(dyn_img) = rdr.decode() {
+                                        let protocol = self.picker.new_resize_protocol(dyn_img);
+                                        let alt_text = reader
+                                            .article
+                                            .images
+                                            .get(idx)
+                                            .and_then(|img| img.alt_text.clone());
+                                        reader.images[idx] =
+                                            ImageLoadState::Loaded(Box::new(ImageState {
+                                                protocol,
+                                                alt_text,
+                                            }));
+                                    } else {
+                                        reader.images[idx] = ImageLoadState::Failed;
+                                    }
+                                }
+                                Err(_) => {
+                                    reader.images[idx] = ImageLoadState::Failed;
+                                }
+                            }
+                        }
+                    }
+                    Ok(ImageLoadMsg::Failed(idx)) => {
+                        if idx < reader.images.len() {
+                            reader.images[idx] = ImageLoadState::Failed;
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        reader.image_load_rx = Some(rx);
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        break;
+                    }
+                }
+            }
+        }
+
         let rx = match self.sync_rx.take() {
             Some(rx) => rx,
             None => return,
@@ -472,40 +535,12 @@ impl App {
         };
         match self.db.get_full_article(article.id) {
             Ok(Some(full)) => {
-                let images: Vec<Option<ImageState>> = full
-                    .images
-                    .iter()
-                    .filter_map(|img| {
-                        img.data.as_ref().map(|data| {
-                            match image::ImageReader::new(std::io::Cursor::new(data))
-                                .with_guessed_format()
-                            {
-                                Ok(reader) => match reader.decode() {
-                                    Ok(dyn_img) => {
-                                        let protocol = self.picker.new_resize_protocol(dyn_img);
-                                        Some(ImageState {
-                                            protocol,
-                                            alt_text: img.alt_text.clone(),
-                                        })
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Failed to decode image {}: {e}", img.url);
-                                        None
-                                    }
-                                },
-                                Err(e) => {
-                                    tracing::warn!("Failed to guess image format {}: {e}", img.url);
-                                    None
-                                }
-                            }
-                        })
-                    })
-                    .collect();
-
+                let (images, rx) = self.load_images(&full);
                 self.reader = Some(ArticleReaderState {
                     article: full,
                     images,
                     scroll_offset: 0,
+                    image_load_rx: rx,
                 });
                 self.focus = Focus::ArticleReader;
             }
@@ -526,40 +561,12 @@ impl App {
         };
         match self.db.get_full_article(article.id) {
             Ok(Some(full)) => {
-                let images: Vec<Option<ImageState>> = full
-                    .images
-                    .iter()
-                    .filter_map(|img| {
-                        img.data.as_ref().map(|data| {
-                            match image::ImageReader::new(std::io::Cursor::new(data))
-                                .with_guessed_format()
-                            {
-                                Ok(reader) => match reader.decode() {
-                                    Ok(dyn_img) => {
-                                        let protocol = self.picker.new_resize_protocol(dyn_img);
-                                        Some(ImageState {
-                                            protocol,
-                                            alt_text: img.alt_text.clone(),
-                                        })
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Failed to decode image {}: {e}", img.url);
-                                        None
-                                    }
-                                },
-                                Err(e) => {
-                                    tracing::warn!("Failed to guess image format {}: {e}", img.url);
-                                    None
-                                }
-                            }
-                        })
-                    })
-                    .collect();
-
+                let (images, rx) = self.load_images(&full);
                 self.reader = Some(ArticleReaderState {
                     article: full,
                     images,
                     scroll_offset: 0,
+                    image_load_rx: rx,
                 });
                 self.focus = Focus::ArticleReader;
             }
@@ -570,6 +577,71 @@ impl App {
                 tracing::error!("Failed to load article {}: {e}", article.id);
             }
         }
+    }
+
+    fn load_images(
+        &mut self,
+        full: &FullArticle,
+    ) -> (Vec<ImageLoadState>, Option<Receiver<ImageLoadMsg>>) {
+        let mut images: Vec<ImageLoadState> = Vec::new();
+        let mut to_fetch: Vec<(usize, u32, String)> = Vec::new();
+
+        for (i, img) in full.images.iter().enumerate() {
+            if let Some(ref data) = img.data {
+                match image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format() {
+                    Ok(reader) => match reader.decode() {
+                        Ok(dyn_img) => {
+                            let protocol = self.picker.new_resize_protocol(dyn_img);
+                            images.push(ImageLoadState::Loaded(Box::new(ImageState {
+                                protocol,
+                                alt_text: img.alt_text.clone(),
+                            })));
+                        }
+                        Err(_) => {
+                            images.push(ImageLoadState::Failed);
+                        }
+                    },
+                    Err(_) => {
+                        images.push(ImageLoadState::Failed);
+                    }
+                }
+            } else {
+                images.push(ImageLoadState::Loading);
+                to_fetch.push((i, img.id, img.url.clone()));
+            }
+        }
+
+        let rx = if to_fetch.is_empty() {
+            None
+        } else {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let db = self.db.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                for (idx, image_id, url) in to_fetch {
+                    let result =
+                        rt.block_on(crate::sync::fetch_and_store_image(&db, image_id, &url));
+                    match result {
+                        Ok(()) => {
+                            if let Ok(Some(img)) = db.get_image_data(image_id) {
+                                let _ = tx.send(ImageLoadMsg::Loaded(idx, img));
+                            } else {
+                                let _ = tx.send(ImageLoadMsg::Failed(idx));
+                            }
+                        }
+                        Err(_) => {
+                            let _ = tx.send(ImageLoadMsg::Failed(idx));
+                        }
+                    }
+                }
+            });
+            Some(rx)
+        };
+
+        (images, rx)
     }
 
     fn trigger_sync(&mut self) {

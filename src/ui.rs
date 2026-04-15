@@ -1,4 +1,4 @@
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, ImageLoadState};
 use ratatui::widgets::calendar::{CalendarEventStore, Monthly};
 use ratatui::{
     Frame,
@@ -703,18 +703,31 @@ fn render_article_reader(frame: &mut Frame, app: &mut App) {
                     width: text_width.min(80),
                     height: vblock.height,
                 };
-                if let Some(state) = &mut reader.images[*idx] {
-                    let widget = StatefulImage::default();
-                    frame.render_stateful_widget(widget, img_area, &mut state.protocol);
-                } else {
-                    let placeholder = Span::styled(
-                        format!("  [Image {} - not available]", *idx + 1),
-                        Style::default().fg(TEXT_DIM).bg(BG),
-                    );
-                    frame.render_widget(
-                        Paragraph::new(Line::from(placeholder)),
-                        Rect::new(inner.x, inner.y + vblock.screen_y, text_width, 1),
-                    );
+                match &mut reader.images[*idx] {
+                    ImageLoadState::Loaded(state) => {
+                        let widget = StatefulImage::default();
+                        frame.render_stateful_widget(widget, img_area, &mut state.protocol);
+                    }
+                    ImageLoadState::Loading => {
+                        let placeholder = Span::styled(
+                            format!("  ⏳ Loading image {}...", *idx + 1),
+                            Style::default().fg(TAG_YELLOW).bg(BG),
+                        );
+                        frame.render_widget(
+                            Paragraph::new(Line::from(placeholder)),
+                            Rect::new(inner.x, inner.y + vblock.screen_y, text_width, 1),
+                        );
+                    }
+                    ImageLoadState::Failed => {
+                        let placeholder = Span::styled(
+                            format!("  [Image {} - not available]", *idx + 1),
+                            Style::default().fg(TEXT_DIM).bg(BG),
+                        );
+                        frame.render_widget(
+                            Paragraph::new(Line::from(placeholder)),
+                            Rect::new(inner.x, inner.y + vblock.screen_y, text_width, 1),
+                        );
+                    }
                 }
             }
         }
