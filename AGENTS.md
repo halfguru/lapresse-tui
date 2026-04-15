@@ -140,20 +140,26 @@ migrations/   — SQL schema (V1__initial_schema.sql)
 ### Data Flow
 1. **Startup**: `main.rs` opens DB, creates `Picker`, initializes `App`. If DB has 0 articles, auto-sync fires.
 2. **Event loop**: 250ms poll cycle — `poll_sync()` checks channel, then `terminal.draw()` renders, then `crossterm::event::poll()` waits for key input.
-3. **Sync thread**: `trigger_sync()` spawns a `std::thread` with an inner `tokio::current_thread` runtime. Uses `std::sync::mpsc::Sender<SyncMsg>` for progress. Three phases: FetchingIndex → ScrapingArticles → DownloadingImages.
-4. **Rendering**: `ui::render()` dispatches based on `Focus` enum (Calendar, ArticleList, ArticleReader, Search). Article reader uses virtual scrolling with `ContentBlock` abstraction (Text/Image blocks).
+3. **CLI sync**: `run_sync()` iterates days sequentially, spawning a `tokio::current_thread` runtime per sync session. Braille spinner animates via `tokio::spawn` + shared atomics. `fetch_page()` retries 403/429 with exponential backoff (5s→10s→20s) + random jitter (0-3s). Summary box printed on completion.
+4. **TUI sync**: `trigger_sync()` spawns a `std::thread` with inner `tokio::current_thread` runtime. Uses `std::sync::mpsc::Sender<SyncMsg>` for progress. Three phases: FetchingIndex → ScrapingArticles → DownloadingImages.
+5. **Rendering**: `ui::render()` dispatches based on `Focus` enum (Calendar, ArticleList, ArticleReader, Search). Article reader uses virtual scrolling with `ContentBlock` abstraction (Text/Image blocks).
+6. **Lazy images**: `--metadata-only` stores NULL image blobs. `ImageLoadState` enum (`Loading`/`Loaded`/`Failed`) drives background fetch via `mpsc` channel in `app.rs`.
 
 ### Key Types
-- `App` — top-level state (focus, articles, sync status, search, filters)
+- `App` — top-level state (focus, articles, sync status, search, filters, image load channel)
 - `Db` — `Mutex<Connection>` wrapper, shared as `Arc<Db>`
 - `NewArticle` / `NewImage` — parameter structs for DB inserts
 - `SyncMsg` — channel messages (Started, Progress, Done, Failed)
+- `ImageLoadState` — lazy image loading state machine (Loading/Loaded/Failed)
 - `ArticleReaderState` — loaded article with decoded image protocols
 
-### Concurrency
-- Sync uses `JoinSet` with `Semaphore` for bounded concurrency (8 article workers, 8 image workers)
-- 500ms inter-request delay to be respectful to lapresse.ca
-- DB is thread-safe via `Mutex<Connection>` inside `Arc<Db>`
+### Concurrency & Rate Limiting
+- CLI sync: days processed sequentially; 4 article workers + 8 image workers per day
+- 100ms inter-request delay between article fetches
+- `fetch_page()` retries 403/429 up to 3 times with exponential backoff (5s→10s→20s) + random jitter
+- FTS rebuild deferred to post-sync (`rebuild_fts()` called once after all days)
+- DB thread-safe via `Mutex<Connection>` inside `Arc<Db>`, `busy_timeout=5000ms`
+- lapresse.ca rate-limits aggressively — sustained 403 blocks possible, lift in ~2-5 min
 <!-- GSD:architecture-end -->
 
 <!-- GSD:skills-start source:skills/ -->

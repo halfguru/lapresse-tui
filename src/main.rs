@@ -34,6 +34,10 @@ enum Commands {
         /// End date (YYYY-MM-DD). Defaults to today
         #[arg(long)]
         to: Option<String>,
+
+        /// Skip image downloads (metadata only, images fetched on-demand in TUI)
+        #[arg(long)]
+        metadata_only: bool,
     },
 }
 
@@ -55,8 +59,10 @@ async fn main() -> Result<()> {
     let db = Db::open(&db_path)?;
 
     match cli.command {
-        Some(Commands::Sync { from, to }) => {
-            tracing_subscriber::fmt::init();
+        Some(Commands::Sync { from, to, metadata_only }) => {
+            tracing_subscriber::fmt()
+                .with_env_filter("lapresse_tui=warn")
+                .init();
             let from_date = match from {
                 Some(s) => parse_date(&s)?,
                 None => NaiveDate::from_ymd_opt(2005, 1, 1).unwrap(),
@@ -66,17 +72,35 @@ async fn main() -> Result<()> {
                 None => chrono::Local::now().date_naive(),
             };
 
-            println!("Syncing La Presse archives: {} to {}\n", from_date, to_date);
+            if metadata_only {
+                println!("Syncing La Presse archives (metadata only): {} to {}\n", from_date, to_date);
+            } else {
+                println!("Syncing La Presse archives: {} to {}\n", from_date, to_date);
+            }
 
-            let stats = sync::run_sync(Arc::new(db), from_date, to_date).await?;
+            let db = Arc::new(db);
+            let stats = sync::run_sync(db.clone(), from_date, to_date, metadata_only).await?;
 
-            println!("\n── Sync Complete ──");
-            println!(
-                "  Days:     {} total, {} scraped, {} failed",
-                stats.days_total, stats.days_scraped, stats.days_failed
-            );
-            println!("  Articles: {}", stats.articles_total);
-            println!("  Images:   {}", stats.images_total);
+            print!("  Rebuilding search index...");
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+            db.rebuild_fts()?;
+            println!("\r  Search index rebuilt.              ");
+
+            println!("╭──────────────────────────────╮");
+            println!("│       Sync Complete          │");
+            println!("├──────────────────────────────┤");
+            println!("│ Days synced:  {:>12} │", stats.days_scraped);
+            println!("│ Articles:     {:>12} │", stats.articles_total);
+            if !metadata_only {
+                println!("│ Images:       {:>12} │", stats.images_total);
+            }
+            if stats.retries > 0 {
+                println!("│ Retries:      {:>12} │", stats.retries);
+            }
+            if stats.days_failed > 0 {
+                println!("│ Days failed:  {:>12} │", stats.days_failed);
+            }
+            println!("╰──────────────────────────────╯");
         }
         None => {
             let log_file = std::fs::File::create(

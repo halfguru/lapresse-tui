@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use scraper::{Html, Selector};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
-use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use url::Url;
 
@@ -13,31 +13,39 @@ use crate::db::{Db, NewArticle, NewImage};
 
 const BASE_URL: &str = "https://www.lapresse.ca";
 const REQUEST_DELAY: Duration = Duration::from_millis(500);
-const MAX_CONCURRENT_DAYS: usize = 8;
-const ARTICLE_CONCURRENCY: usize = 8;
+const CLI_DELAY: Duration = Duration::from_millis(100);
+const ARTICLE_CONCURRENCY: usize = 4;
 const IMAGE_CONCURRENCY: usize = 8;
+const MAX_RETRIES: u32 = 3;
+const RETRY_BASE_DELAY: Duration = Duration::from_secs(5);
 
 pub struct SyncStats {
-    pub days_total: u32,
     pub days_scraped: u32,
     pub days_failed: u32,
     pub articles_total: u32,
     pub images_total: u32,
+    pub retries: u32,
+    pub articles_blocked: u32,
 }
 
 impl SyncStats {
     pub fn new() -> Self {
         Self {
-            days_total: 0,
             days_scraped: 0,
             days_failed: 0,
             articles_total: 0,
             images_total: 0,
+            retries: 0,
+            articles_blocked: 0,
         }
     }
 }
 
-pub async fn run_sync(db: Arc<Db>, from: NaiveDate, to: NaiveDate) -> Result<SyncStats> {
+pub async fn run_sync(db: Arc<Db>, from: NaiveDate, to: NaiveDate, metadata_only: bool) -> Result<SyncStats> {
+    let total_days = (to - from).num_days() as u32 + 1;
+    print!("  Scanning {} days ({} to {})...\r", total_days, from, to);
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+
     let client = reqwest::Client::builder()
         .cookie_store(true)
         .user_agent(
@@ -46,101 +54,139 @@ pub async fn run_sync(db: Arc<Db>, from: NaiveDate, to: NaiveDate) -> Result<Syn
         .build()?;
 
     let mut dates = Vec::new();
+    let mut skipped = 0u32;
     let mut current = from;
+    let mut scan_i = 0u32;
     while current <= to {
+        scan_i += 1;
+        if scan_i.is_multiple_of(500) {
+            print!("\r  Scanning: {scan_i}/{total_days} days checked...   ");
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
         let date_str = current.format("%Y-%m-%d").to_string();
         match db.get_sync_state(&date_str)? {
             Some(status) if status == "complete" => {
-                println!("  ✓ {} — already synced, skipping", date_str);
+                skipped += 1;
             }
-            Some(_) => {
-                println!("  ⟳ {} — queued (retry)", date_str);
-                dates.push(current);
-            }
-            None => {
-                println!("  → {} — queued", date_str);
+            _ => {
                 dates.push(current);
             }
         }
         current = current.succ_opt().unwrap();
     }
 
-    if dates.is_empty() {
-        println!("\n  All days already synced.");
-        return Ok(SyncStats::new());
+    let to_sync = dates.len() as u32;
+
+    if to_sync == 0 {
+        println!("\r  ✓ All {total_days} days already synced.          ");
+        return Ok(SyncStats {
+            days_scraped: skipped,
+            ..SyncStats::new()
+        });
     }
 
-    let total = dates.len();
+    let retry_count = dates.iter().filter(|d| {
+        let s = d.format("%Y-%m-%d").to_string();
+        db.get_sync_state(&s).ok().flatten().is_some()
+    }).count();
+
     println!(
-        "\n  Syncing {} day(s) with {MAX_CONCURRENT_DAYS} concurrent workers...\n",
-        total
+        "\r  Scanning done: {skipped} synced, {to_sync} to sync ({retry_count} retries)          "
     );
 
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_DAYS));
-    let client = Arc::new(client);
-    let mut set: JoinSet<Result<DayResult, anyhow::Error>> = JoinSet::new();
+    if metadata_only {
+        println!("  Mode: metadata only (images fetched on-demand in TUI)");
+    }
+    println!("  Concurrency: {ARTICLE_CONCURRENCY} articles, {}ms delay", CLI_DELAY.as_millis());
+    println!();
 
-    for date in dates {
-        let db = db.clone();
-        let client = client.clone();
-        let sem = semaphore.clone();
-        set.spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
-            let date_str = date.format("%Y-%m-%d").to_string();
-            db.upsert_sync_state(&date_str, "in_progress", 0, 0)?;
-            match sync_day(client, db.clone(), &date, None).await {
-                Ok((article_count, image_count)) => {
-                    db.upsert_sync_state(&date_str, "complete", article_count, article_count)?;
-                    Ok(DayResult {
-                        date: date_str,
-                        articles: article_count,
-                        images: image_count,
-                        failed: false,
-                    })
+    let client = Arc::new(client);
+    let mut stats = SyncStats::new();
+    let retry_counter = Arc::new(AtomicU32::new(0));
+    let blocked_counter = Arc::new(AtomicU32::new(0));
+
+    let total = skipped + to_sync;
+    let spinner_frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let sync_done = Arc::new(AtomicBool::new(false));
+    let shared_batch_done = Arc::new(AtomicU32::new(0));
+    let shared_articles = Arc::new(AtomicU32::new(0));
+    let shared_failed = Arc::new(AtomicU32::new(0));
+    let shared_date = Arc::new(std::sync::Mutex::new(String::new()));
+
+    {
+        let sync_done = sync_done.clone();
+        let shared_batch_done = shared_batch_done.clone();
+        let shared_articles = shared_articles.clone();
+        let shared_failed = shared_failed.clone();
+        let shared_date = shared_date.clone();
+        tokio::spawn(async move {
+            let mut frame = 0;
+            loop {
+                if sync_done.load(Ordering::Relaxed) {
+                    break;
                 }
-                Err(e) => {
-                    db.upsert_sync_state(&date_str, "failed", 0, 0)?;
-                    tracing::warn!("Failed to sync {}: {e:#}", date_str);
-                    Ok(DayResult {
-                        date: date_str,
-                        articles: 0,
-                        images: 0,
-                        failed: true,
-                    })
+                let batch_done = shared_batch_done.load(Ordering::Relaxed);
+                let articles = shared_articles.load(Ordering::Relaxed);
+                let fails = shared_failed.load(Ordering::Relaxed);
+                let overall_done = skipped + batch_done;
+                let pct = if total > 0 { overall_done * 100 / total } else { 100 };
+                let bar = progress_bar(pct, 30);
+                let fail_str = if fails > 0 { format!(", {fails} failed") } else { String::new() };
+                let date_str = shared_date.lock().unwrap().clone();
+                let spin = spinner_frames[frame % spinner_frames.len()];
+                if date_str.is_empty() {
+                    print!("\r  [{bar}] {pct:3}% — {batch_done}/{to_sync} days, {articles} articles{fail_str} — preparing...   ");
+                } else {
+                    print!("\r  [{bar}] {pct:3}% — {batch_done}/{to_sync} days, {articles} articles{fail_str} {spin} {date_str}   ");
                 }
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+                frame += 1;
+                tokio::time::sleep(Duration::from_millis(80)).await;
             }
         });
     }
 
-    let mut stats = SyncStats {
-        days_total: total as u32,
-        ..SyncStats::new()
-    };
-
-    while let Some(result) = set.join_next().await {
-        let day = result??;
-        if day.failed {
-            stats.days_failed += 1;
-            println!("    ✗ {} — failed", day.date);
-        } else {
-            stats.days_scraped += 1;
-            stats.articles_total += day.articles;
-            stats.images_total += day.images;
-            println!(
-                "    ✓ {} — {} articles, {} images",
-                day.date, day.articles, day.images
-            );
+    for date in &dates {
+        let date_str = date.format("%Y-%m-%d").to_string();
+        {
+            let mut d = shared_date.lock().unwrap();
+            *d = date_str.clone();
         }
+
+        db.upsert_sync_state(&date_str, "in_progress", 0, 0)?;
+        let result = sync_day(client.clone(), db.clone(), date, None, metadata_only, true, retry_counter.clone()).await;
+
+        match result {
+            Ok((article_count, image_count)) => {
+                db.upsert_sync_state(&date_str, "complete", article_count, article_count)?;
+                stats.days_scraped += 1;
+                stats.articles_total += article_count;
+                stats.images_total += image_count;
+            }
+            Err(e) => {
+                db.upsert_sync_state(&date_str, "failed", 0, 0)?;
+                stats.days_failed += 1;
+                tracing::debug!("Failed to sync {date_str}: {e:#}");
+            }
+        }
+
+        shared_batch_done.store(stats.days_scraped + stats.days_failed, Ordering::Relaxed);
+        shared_articles.store(stats.articles_total, Ordering::Relaxed);
+        shared_failed.store(stats.days_failed, Ordering::Relaxed);
     }
+
+    stats.retries = retry_counter.load(Ordering::Relaxed);
+    stats.articles_blocked = blocked_counter.load(Ordering::Relaxed);
+    sync_done.store(true, Ordering::Relaxed);
+    println!();
 
     Ok(stats)
 }
 
-struct DayResult {
-    date: String,
-    articles: u32,
-    images: u32,
-    failed: bool,
+fn progress_bar(pct: u32, width: usize) -> String {
+    let filled = (pct as usize * width / 100).min(width);
+    let empty = width - filled;
+    "█".repeat(filled) + &"░".repeat(empty)
 }
 
 async fn sync_day(
@@ -148,6 +194,9 @@ async fn sync_day(
     db: Arc<Db>,
     date: &NaiveDate,
     tx: Option<&Sender<SyncMsg>>,
+    metadata_only: bool,
+    skip_delay: bool,
+    retry_counter: Arc<AtomicU32>,
 ) -> Result<(u32, u32)> {
     if let Some(tx) = tx {
         let _ = tx.send(SyncMsg::Progress(SyncPhase {
@@ -164,7 +213,7 @@ async fn sync_day(
         date.format("%-d")
     );
 
-    let html = fetch_page(&client, &url).await?;
+    let html = fetch_page(&client, &url, Some(&retry_counter)).await?;
     let article_links = parse_day_page(&html)?;
 
     if article_links.is_empty() {
@@ -188,10 +237,15 @@ async fn sync_day(
         let sem = sem.clone();
         let client = client.clone();
         let db = db.clone();
+        let retry_counter = retry_counter.clone();
         scrape_set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            tokio::time::sleep(REQUEST_DELAY).await;
-            scrape_article_metadata(&client, &db, &link).await
+            if skip_delay {
+                tokio::time::sleep(CLI_DELAY).await;
+            } else {
+                tokio::time::sleep(REQUEST_DELAY).await;
+            }
+            scrape_article_metadata(&client, &db, &link, &retry_counter).await
         });
     }
 
@@ -207,7 +261,7 @@ async fn sync_day(
                 all_pending_images.extend(pending_images);
             }
             Err(e) => {
-                tracing::warn!("Failed to scrape article: {e:#}");
+                tracing::debug!("Failed to scrape article: {e:#}");
             }
         }
         if let Some(tx) = tx {
@@ -222,39 +276,53 @@ async fn sync_day(
     let total_images = all_pending_images.len() as u32;
 
     if !all_pending_images.is_empty() {
-        if let Some(tx) = tx {
-            let _ = tx.send(SyncMsg::Progress(SyncPhase {
-                phase: SyncPhaseKind::DownloadingImages,
-                current: 0,
-                total: total_images,
-            }));
-        }
-
-        let img_sem = Arc::new(tokio::sync::Semaphore::new(IMAGE_CONCURRENCY));
-        let mut img_set: JoinSet<Result<(), anyhow::Error>> = JoinSet::new();
-        let mut images_done = 0u32;
-
-        for pending in all_pending_images {
-            let img_sem = img_sem.clone();
-            let client = client.clone();
-            let db = db.clone();
-            img_set.spawn(async move {
-                let _permit = img_sem.acquire().await.unwrap();
-                download_and_store_image(&client, &db, pending).await
-            });
-        }
-
-        while let Some(result) = img_set.join_next().await {
-            images_done += 1;
-            if let Err(e) = result? {
-                tracing::warn!("Image download failed: {e:#}");
+        if metadata_only {
+            for pending in all_pending_images {
+                db.insert_image(&NewImage {
+                    article_id: pending.article_id,
+                    url: &pending.url,
+                    alt_text: pending.alt_text.as_deref(),
+                    data: None,
+                    format: None,
+                    width: None,
+                    height: None,
+                })?;
             }
+        } else {
             if let Some(tx) = tx {
                 let _ = tx.send(SyncMsg::Progress(SyncPhase {
                     phase: SyncPhaseKind::DownloadingImages,
-                    current: images_done,
+                    current: 0,
                     total: total_images,
                 }));
+            }
+
+            let img_sem = Arc::new(tokio::sync::Semaphore::new(IMAGE_CONCURRENCY));
+            let mut img_set: JoinSet<Result<(), anyhow::Error>> = JoinSet::new();
+            let mut images_done = 0u32;
+
+            for pending in all_pending_images {
+                let img_sem = img_sem.clone();
+                let client = client.clone();
+                let db = db.clone();
+                img_set.spawn(async move {
+                    let _permit = img_sem.acquire().await.unwrap();
+                    download_and_store_image(&client, &db, pending).await
+                });
+            }
+
+            while let Some(result) = img_set.join_next().await {
+                images_done += 1;
+                if let Err(e) = result? {
+                    tracing::warn!("Image download failed: {e:#}");
+                }
+                if let Some(tx) = tx {
+                    let _ = tx.send(SyncMsg::Progress(SyncPhase {
+                        phase: SyncPhaseKind::DownloadingImages,
+                        current: images_done,
+                        total: total_images,
+                    }));
+                }
             }
         }
     }
@@ -324,8 +392,9 @@ async fn scrape_article_metadata(
     client: &reqwest::Client,
     db: &Db,
     link: &ArticleLink,
+    retry_counter: &AtomicU32,
 ) -> Result<(u32, Vec<PendingImage>)> {
-    let html = fetch_page(client, &link.url).await?;
+    let html = fetch_page(client, &link.url, Some(retry_counter)).await?;
     let parsed = parse_article_page(&html, &link.url)?;
 
     let article_id = db.insert_article(&NewArticle {
@@ -483,22 +552,36 @@ fn parse_article_page(html: &str, article_url: &str) -> Result<ParsedArticle> {
     })
 }
 
-async fn fetch_page(client: &reqwest::Client, url: &str) -> Result<String> {
+async fn fetch_page(client: &reqwest::Client, url: &str, retry_counter: Option<&AtomicU32>) -> Result<String> {
     tracing::debug!("Fetching {url}");
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("Failed to fetch {url}"))?;
-    let status = response.status();
-    if !status.is_success() {
+    for attempt in 0..=MAX_RETRIES {
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("Failed to fetch {url}"))?;
+        let status = response.status();
+        if status.is_success() {
+            let text = response
+                .text()
+                .await
+                .with_context(|| format!("Failed to read response from {url}"))?;
+            return Ok(text);
+        }
+        if (status.as_u16() == 403 || status.as_u16() == 429) && attempt < MAX_RETRIES {
+            if let Some(counter) = retry_counter {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+            let base_delay = RETRY_BASE_DELAY * 2u32.saturating_pow(attempt);
+            let jitter = Duration::from_millis(rand::random::<u64>() % 3000);
+            let delay = base_delay + jitter;
+            tracing::debug!("HTTP {status} for {url}, retrying in {delay:?}...");
+            tokio::time::sleep(delay).await;
+            continue;
+        }
         anyhow::bail!("HTTP {status} for {url}");
     }
-    let text = response
-        .text()
-        .await
-        .with_context(|| format!("Failed to read response from {url}"))?;
-    Ok(text)
+    unreachable!()
 }
 
 async fn fetch_image(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
@@ -527,6 +610,7 @@ pub async fn sync_single_day_with_progress(
     let client = Arc::new(
         reqwest::Client::builder()
             .cookie_store(true)
+    
             .user_agent("Mozilla/5.0 (compatible; lapresse-tui/0.1; +https://github.com/halfguru/lapresse-tui)")
             .build()?,
     );
@@ -536,7 +620,8 @@ pub async fn sync_single_day_with_progress(
 
     let _ = tx.send(SyncMsg::Started);
 
-    match sync_day(client, db.clone(), &date, Some(&tx)).await {
+    let retry_counter = Arc::new(AtomicU32::new(0));
+    match sync_day(client, db.clone(), &date, Some(&tx), false, false, retry_counter).await {
         Ok((articles, images)) => {
             let date_str = date.format("%Y-%m-%d").to_string();
             db.upsert_sync_state(&date_str, "complete", articles, articles)?;
@@ -550,6 +635,25 @@ pub async fn sync_single_day_with_progress(
             Err(e)
         }
     }
+}
+
+pub async fn fetch_and_store_image(db: &Db, image_id: u32, url: &str) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+
+        .user_agent("Mozilla/5.0 (compatible; lapresse-tui/0.1; +https://github.com/halfguru/lapresse-tui)")
+        .build()?;
+
+    let image_data = fetch_image(&client, url).await?;
+    let (width, height) = image::ImageReader::new(std::io::Cursor::new(&image_data))
+        .with_guessed_format()
+        .ok()
+        .and_then(|reader| reader.into_dimensions().ok())
+        .map(|(w, h)| (Some(w), Some(h)))
+        .unwrap_or((None, None));
+
+    db.update_image_data(image_id, &image_data, width, height)?;
+    Ok(())
 }
 
 #[cfg(test)]
