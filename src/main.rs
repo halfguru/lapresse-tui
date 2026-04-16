@@ -134,6 +134,7 @@ async fn main() -> Result<()> {
 
             while !app.should_quit {
                 app.poll_sync();
+                app.poll_search();
                 terminal.draw(|frame| ui::render(frame, &mut app))?;
 
                 if crossterm::event::poll(Duration::from_millis(250))?
