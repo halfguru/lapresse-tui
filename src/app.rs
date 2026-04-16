@@ -5,6 +5,7 @@ use ratatui_image::protocol::StatefulProtocol;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
+use std::time::Instant;
 use time::{Date, Month, OffsetDateTime};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -102,6 +103,11 @@ pub struct App {
     pub search_query: String,
     pub search_results: Vec<Article>,
     pub search_selected: usize,
+    pub search_pending: bool,
+    pub last_search_keystroke: Option<Instant>,
+    pub search_rx: Option<Receiver<Vec<Article>>>,
+    pub searching: bool,
+    pub search_spinner: u8,
 }
 
 impl App {
@@ -142,6 +148,11 @@ impl App {
             search_query: String::new(),
             search_results: Vec::new(),
             search_selected: 0,
+            search_pending: false,
+            last_search_keystroke: None,
+            search_rx: None,
+            searching: false,
+            search_spinner: 0,
         };
         app.populate_sections();
         if app.article_count == 0 {
@@ -315,6 +326,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::collapsible_match)]
     fn handle_section_picker_key(&mut self, key: KeyEvent) {
         let total = self.sections.len() + 1;
         match key.code {
@@ -360,6 +372,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::collapsible_match)]
     fn handle_article_list_key(&mut self, key: KeyEvent) {
         let filtered = self.filtered_articles();
         let filtered_len = filtered.len();
@@ -475,6 +488,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::collapsible_match)]
     fn handle_search_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
@@ -500,14 +514,47 @@ impl App {
             }
             KeyCode::Backspace => {
                 self.search_query.pop();
-                self.execute_search();
+                self.last_search_keystroke = Some(Instant::now());
+                self.search_pending = true;
             }
             KeyCode::Char(c) => {
                 self.search_query.push(c);
-                self.execute_search();
+                self.last_search_keystroke = Some(Instant::now());
+                self.search_pending = true;
             }
             _ => {}
         }
+    }
+
+    pub fn poll_search(&mut self) {
+        if let Some(rx) = &self.search_rx {
+            match rx.try_recv() {
+                Ok(results) => {
+                    self.search_results = results;
+                    self.search_selected = 0;
+                    self.searching = false;
+                    self.search_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.search_spinner = (self.search_spinner + 1) % 10;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.searching = false;
+                    self.search_rx = None;
+                }
+            }
+            return;
+        }
+        if !self.search_pending {
+            return;
+        }
+        if let Some(t) = self.last_search_keystroke
+            && t.elapsed().as_millis() < 300
+        {
+            return;
+        }
+        self.search_pending = false;
+        self.execute_search();
     }
 
     fn execute_search(&mut self) {
@@ -517,15 +564,14 @@ impl App {
             return;
         }
         let query = format!("{}*", self.search_query);
-        match self.db.search_articles(&query) {
-            Ok(results) => {
-                self.search_results = results;
-                self.search_selected = 0;
-            }
-            Err(_) => {
-                self.search_results.clear();
-            }
-        }
+        let db = Arc::clone(&self.db);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.search_rx = Some(rx);
+        self.searching = true;
+        std::thread::spawn(move || {
+            let result = db.search_articles(&query);
+            let _ = tx.send(result.unwrap_or_default());
+        });
     }
 
     fn open_search_article(&mut self) {

@@ -140,11 +140,7 @@ pub async fn run_sync(
                 let articles = shared_articles.load(Ordering::Relaxed);
                 let fails = shared_failed.load(Ordering::Relaxed);
                 let overall_done = skipped + batch_done;
-                let pct = if total > 0 {
-                    overall_done * 100 / total
-                } else {
-                    100
-                };
+                let pct = (overall_done * 100).checked_div(total).unwrap_or(100);
                 let bar = progress_bar(pct, 30);
                 let fail_str = if fails > 0 {
                     format!(", {fails} failed")

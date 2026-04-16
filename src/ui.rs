@@ -883,10 +883,29 @@ fn render_search(frame: &mut Frame, app: &mut App) {
     let input_inner = input_block.inner(header_area);
     frame.render_widget(input_block, header_area);
 
+    let spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+    let spinner = if app.searching {
+        spinner_chars
+            .chars()
+            .nth(app.search_spinner as usize % spinner_chars.len())
+            .unwrap()
+            .to_string()
+    } else {
+        String::new()
+    };
+
     let query_line = Line::from(vec![
         Span::styled("> ", Style::default().fg(ACCENT)),
         Span::styled(&app.search_query, Style::default().fg(TEXT_PRIMARY)),
         Span::styled("▎", Style::default().fg(ACCENT)),
+        if app.searching {
+            Span::styled(
+                format!(" {spinner} searching..."),
+                Style::default().fg(ACCENT),
+            )
+        } else {
+            Span::raw("")
+        },
     ]);
     frame.render_widget(query_line, input_inner);
 
