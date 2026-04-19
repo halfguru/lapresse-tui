@@ -126,6 +126,12 @@ async fn main() -> Result<()> {
 
             let mut terminal = ratatui::init();
 
+            crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::EnableMouseCapture,
+                crossterm::terminal::SetTitle("lapresse-tui")
+            )?;
+
             let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
             let protocol_type = picker.protocol_type();
             tracing::info!("Image protocol: {protocol_type:?}");
@@ -135,15 +141,40 @@ async fn main() -> Result<()> {
             while !app.should_quit {
                 app.poll_sync();
                 app.poll_search();
+
+                if let Some(msg) = app.last_clipboard_msg.take() {
+                    let _ = msg;
+                }
+
+                let date_str = app.selected_date.to_string();
+                let title = if app.focus == app::Focus::ArticleReader {
+                    if let Some(ref reader) = app.reader {
+                        format!("lapresse-tui — {}", reader.article.title)
+                    } else {
+                        format!("lapresse-tui — {date_str}")
+                    }
+                } else {
+                    format!("lapresse-tui — {date_str}")
+                };
+                crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title))?;
+
                 terminal.draw(|frame| ui::render(frame, &mut app))?;
 
-                if crossterm::event::poll(Duration::from_millis(250))?
-                    && let crossterm::event::Event::Key(key_event) = crossterm::event::read()?
-                {
-                    app.handle_key(key_event);
+                if crossterm::event::poll(Duration::from_millis(250))? {
+                    match crossterm::event::read()? {
+                        crossterm::event::Event::Key(key_event) => {
+                            app.handle_key(key_event);
+                        }
+                        crossterm::event::Event::Mouse(mouse_event) => {
+                            app.handle_mouse(mouse_event);
+                        }
+                        crossterm::event::Event::Resize(_, _) => {}
+                        _ => {}
+                    }
                 }
             }
 
+            crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
             ratatui::restore();
         }
     }

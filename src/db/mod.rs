@@ -51,7 +51,7 @@ impl Db {
     pub fn articles_by_date(&self, date: &str) -> Result<Vec<Article>> {
         let conn = self.conn.lock().expect("db connection poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, title, section, author, published_at, content_text FROM articles WHERE published_at >= ? AND published_at < ? ORDER BY published_at",
+            "SELECT id, url, title, section, author, published_at, content_text FROM articles WHERE published_at >= ? AND published_at < ? ORDER BY published_at",
         )?;
         let start = format!("{date}T00:00:00");
         let end = format!("{date}T23:59:59");
@@ -59,11 +59,12 @@ impl Db {
             .query_map([&start, &end], |row| {
                 Ok(Article {
                     id: row.get(0)?,
-                    title: row.get(1)?,
-                    section: row.get(2)?,
-                    author: row.get(3)?,
-                    published_at: row.get(4)?,
-                    snippet: row.get(5)?,
+                    url: row.get(1)?,
+                    title: row.get(2)?,
+                    section: row.get(3)?,
+                    author: row.get(4)?,
+                    published_at: row.get(5)?,
+                    snippet: row.get(6)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -165,7 +166,7 @@ impl Db {
     pub fn search_articles(&self, query: &str) -> Result<Vec<Article>> {
         let conn = self.conn.lock().expect("db connection poisoned");
         let mut stmt = conn.prepare(
-            "SELECT a.id, a.title, a.section, a.author, a.published_at, a.content_text
+            "SELECT a.id, a.url, a.title, a.section, a.author, a.published_at, a.content_text
              FROM articles a
              JOIN articles_fts fts ON a.id = fts.rowid
              WHERE articles_fts MATCH ?
@@ -176,11 +177,12 @@ impl Db {
             .query_map([query], |row| {
                 Ok(Article {
                     id: row.get(0)?,
-                    title: row.get(1)?,
-                    section: row.get(2)?,
-                    author: row.get(3)?,
-                    published_at: row.get(4)?,
-                    snippet: row.get(5)?,
+                    url: row.get(1)?,
+                    title: row.get(2)?,
+                    section: row.get(3)?,
+                    author: row.get(4)?,
+                    published_at: row.get(5)?,
+                    snippet: row.get(6)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -190,16 +192,17 @@ impl Db {
     pub fn get_full_article(&self, article_id: u32) -> Result<Option<FullArticle>> {
         let conn = self.conn.lock().expect("db connection poisoned");
         let article = conn.query_row(
-            "SELECT id, title, section, author, published_at, content_text FROM articles WHERE id = ?1",
+            "SELECT id, url, title, section, author, published_at, content_text FROM articles WHERE id = ?1",
             [article_id],
             |row| {
                 Ok(FullArticle {
                     id: row.get(0)?,
-                    title: row.get(1)?,
-                    section: row.get(2)?,
-                    author: row.get(3)?,
-                    published_at: row.get(4)?,
-                    content_text: row.get(5)?,
+                    url: row.get(1)?,
+                    title: row.get(2)?,
+                    section: row.get(3)?,
+                    author: row.get(4)?,
+                    published_at: row.get(5)?,
+                    content_text: row.get(6)?,
                     images: Vec::new(),
                 })
             },

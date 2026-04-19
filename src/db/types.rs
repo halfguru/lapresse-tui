@@ -1,5 +1,6 @@
 pub struct Article {
     pub id: u32,
+    pub url: String,
     pub title: String,
     pub section: Option<String>,
     pub author: Option<String>,
@@ -10,6 +11,7 @@ pub struct Article {
 #[expect(dead_code)]
 pub struct FullArticle {
     pub id: u32,
+    pub url: String,
     pub title: String,
     pub section: Option<String>,
     pub author: Option<String>,

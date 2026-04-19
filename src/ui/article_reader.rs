@@ -314,7 +314,7 @@ pub fn render_article_reader(frame: &mut Frame, app: &mut App) {
 
     let footer = Line::from(vec![
         Span::styled(
-            " j/k:scroll  Ctrl-d/u:half-page  g/G:top/bottom  q/Esc:back ",
+            " j/k:scroll  Ctrl-d/u:half-page  g/G:top/bottom  o:open  y:copy  q/Esc:back ",
             Style::default().fg(TEXT_DIM),
         ),
         Span::styled(scroll_bar, Style::default().fg(TEXT_META)),
