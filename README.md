@@ -25,7 +25,22 @@ Browse 20 years of Quebec French newspaper articles (2005–2026) through a cale
 - **Auto-sync on date select** — navigating to a date automatically fetches articles from lapresse.ca
 - **Lazy image loading** — images are only downloaded when you open an article, not during sync
 - **Concurrent scraping** — 4 article workers + 8 image workers with exponential backoff + jitter for rate-limit resilience
-- **Live sync progress** — animated spinner, phase tracking, and article counts in real-time during CLI sync
+- **Live sync progress** — animated spinner, phase tracking, and progress bar in real-time
+- **Mouse support** — scroll, click to select articles, click to focus panes
+- **Open in browser / copy URL** — press `o` to open an article in your browser, `y` to copy its URL
+
+## Installation
+
+```bash
+# Install from source (requires Rust 1.85+)
+cargo install --git https://github.com/halfguru/lapresse-tui
+
+# Or clone and build
+git clone https://github.com/halfguru/lapresse-tui.git
+cd lapresse-tui
+cargo build --release
+./target/release/lapresse-tui
+```
 
 ## Usage
 
@@ -46,13 +61,15 @@ cargo run -- sync --from 2005-01-01 --to 2026-12-31 --metadata-only
 |-----|--------|
 | `h/l` | Previous/next month |
 | `H/L` | Previous/next year |
-| `j/k` | Move selection |
+| `j/k` | Move selection / scroll |
 | `Enter` | Select date / open article |
+| `o` | Open article in browser |
+| `y` | Copy article URL to clipboard |
 | `c` | Switch to calendar |
 | `f` / `F` | Filter / clear section filter |
 | `/` | Search articles |
 | `?` | Help |
-| `q` | Quit |
+| `q` / `Esc` | Quit / go back |
 
 ## Architecture
 

@@ -2,7 +2,7 @@ mod handlers;
 mod image_loader;
 
 use crate::db::{Article, Db, FullArticle};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use std::sync::Arc;
@@ -75,6 +75,11 @@ pub struct ArticleReaderState {
     pub image_load_rx: Option<Receiver<ImageLoadMsg>>,
 }
 
+pub struct LayoutAreas {
+    pub calendar: ratatui::layout::Rect,
+    pub article_list: ratatui::layout::Rect,
+}
+
 pub struct App {
     pub should_quit: bool,
     pub db: Arc<Db>,
@@ -105,6 +110,8 @@ pub struct App {
     pub search_rx: Option<Receiver<Vec<Article>>>,
     pub searching: bool,
     pub search_spinner: u8,
+    pub last_clipboard_msg: Option<String>,
+    pub layout_areas: Option<LayoutAreas>,
 }
 
 impl App {
@@ -143,10 +150,34 @@ impl App {
             search_rx: None,
             searching: false,
             search_spinner: 0,
+            last_clipboard_msg: None,
+            layout_areas: None,
         };
         app.populate_sections();
         app.maybe_auto_sync();
         Ok(app)
+    }
+
+    pub fn open_url_in_browser(&self, url: &str) {
+        if let Err(e) = open::that(url) {
+            tracing::error!("Failed to open URL: {e}");
+        }
+    }
+
+    pub fn copy_url_to_clipboard(&mut self, url: &str) {
+        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(url)) {
+            Ok(()) => {
+                self.last_clipboard_msg = Some("URL copied to clipboard".to_string());
+            }
+            Err(e) => {
+                tracing::error!("Failed to copy to clipboard: {e}");
+                self.last_clipboard_msg = Some("Failed to copy".to_string());
+            }
+        }
+    }
+
+    pub fn handle_mouse(&mut self, event: MouseEvent) {
+        handlers::handle_mouse(self, event);
     }
 
     pub fn poll_sync(&mut self) {

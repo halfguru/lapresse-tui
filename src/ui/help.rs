@@ -8,7 +8,7 @@ use ratatui::{
 use super::{ACCENT, ACCENT2, BG, BORDER_FOCUSED, TEXT_PRIMARY};
 
 pub fn render_help(frame: &mut Frame) {
-    let area = super::centered_rect(54, 24, frame.area());
+    let area = super::centered_rect(56, 28, frame.area());
 
     frame.render_widget(Clear, area);
 
@@ -53,6 +53,14 @@ pub fn render_help(frame: &mut Frame) {
             Style::default().fg(TEXT_PRIMARY),
         )),
         Line::from(Span::styled(
+            "  o      open in browser",
+            Style::default().fg(TEXT_PRIMARY),
+        )),
+        Line::from(Span::styled(
+            "  y      copy URL to clipboard",
+            Style::default().fg(TEXT_PRIMARY),
+        )),
+        Line::from(Span::styled(
             "  c      switch to calendar",
             Style::default().fg(TEXT_PRIMARY),
         )),
@@ -78,7 +86,16 @@ pub fn render_help(frame: &mut Frame) {
             Style::default().fg(TEXT_PRIMARY),
         )),
         Line::from(Span::styled(
+            "  o      open in browser  y  copy URL",
+            Style::default().fg(TEXT_PRIMARY),
+        )),
+        Line::from(Span::styled(
             "  ?      toggle this help",
+            Style::default().fg(TEXT_PRIMARY),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Mouse: scroll, click to select, click to focus pane",
             Style::default().fg(TEXT_PRIMARY),
         )),
     ];

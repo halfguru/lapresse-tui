@@ -63,6 +63,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         frame.area(),
     );
 
+    let area = frame.area();
+    if area.width < 80 || area.height < 24 {
+        let msg = format!(
+            "Terminal too small: {}x{}\nMinimum: 80x24",
+            area.width, area.height
+        );
+        let text = Paragraph::new(msg)
+            .style(Style::default().fg(TEXT_PRIMARY).bg(BG))
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(text, area);
+        return;
+    }
+
     if app.focus == Focus::ArticleReader && app.reader.is_some() {
         render_article_reader(frame, app);
         if app.show_help {
@@ -101,6 +114,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     render_calendar(frame, app, cal_centered);
 
+    app.layout_areas = Some(crate::app::LayoutAreas {
+        calendar: cal_centered,
+        article_list: list_area,
+    });
+
     render_article_list(frame, app, list_area);
     render_status(frame, app, status_area);
 
@@ -114,11 +132,24 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let date_str = app.selected_date.to_string();
-    let focus_label = match app.focus {
-        Focus::Calendar => "CALENDAR",
-        Focus::ArticleList => "ARTICLES",
-        Focus::ArticleReader => "READING",
-        Focus::Search => "SEARCH",
+
+    let breadcrumb = match app.focus {
+        Focus::Calendar => format!(" > {date_str} > Calendar"),
+        Focus::ArticleList => {
+            let count = app.articles.len();
+            format!(" > {date_str} > Articles ({count})")
+        }
+        Focus::ArticleReader => {
+            if let Some(ref reader) = app.reader {
+                let title = truncate_str(&reader.article.title, 30);
+                format!(" > {date_str} > {title}")
+            } else {
+                format!(" > {date_str} > Reading")
+            }
+        }
+        Focus::Search => {
+            format!(" > Search > \"{}\"", app.search_query)
+        }
     };
 
     let sync_indicator = if app.syncing {
@@ -134,8 +165,10 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         };
         let label = if let Some(phase) = &app.sync_phase {
             if phase.total > 0 {
+                let filled = (phase.current as usize * 8 / phase.total as usize).min(8);
+                let bar: String = "█".repeat(filled) + &"░".repeat(8 - filled);
                 format!(
-                    " {spinner} {}: {}/{} ",
+                    " {spinner} {}: {}/{} {bar} ",
                     phase.phase, phase.current, phase.total
                 )
             } else {
@@ -155,6 +188,20 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         vec![]
     };
 
+    let clipboard_msg = app
+        .last_clipboard_msg
+        .as_deref()
+        .map(|msg| {
+            vec![
+                Span::raw(" "),
+                Span::styled(
+                    format!(" {msg} "),
+                    Style::default().fg(Color::Rgb(22, 27, 44)).bg(TAG_GREEN),
+                ),
+            ]
+        })
+        .unwrap_or_default();
+
     let mut header_spans = vec![
         Span::styled(
             " lapresse-tui ",
@@ -163,15 +210,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 .bg(ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!(" {date_str} "),
-            Style::default().fg(TEXT_PRIMARY).bg(BG_LIGHTER),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!(" {focus_label} "),
-            Style::default().fg(Color::Rgb(22, 27, 44)).bg(ACCENT2),
-        ),
+        Span::styled(breadcrumb, Style::default().fg(TEXT_PRIMARY).bg(BG_LIGHTER)),
         Span::raw(" "),
         Span::styled(
             format!(" {} articles ", app.article_count),
@@ -184,10 +223,25 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         ),
     ];
     header_spans.extend(sync_indicator);
+    header_spans.extend(clipboard_msg);
 
     let header = Line::from(header_spans);
 
     frame.render_widget(header, area);
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let end = s
+            .char_indices()
+            .take(max - 1)
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        format!("{}…", &s[..end])
+    }
 }
 
 fn render_section_picker(frame: &mut Frame, app: &App) {
@@ -290,7 +344,7 @@ fn render_section_picker(frame: &mut Frame, app: &App) {
 }
 
 fn render_status(frame: &mut Frame, _app: &App, area: Rect) {
-    let help_text = " ?:help c:cal f:filter /:search q:quit ";
+    let help_text = " ?:help c:cal f:filter /:search o:open y:copy q:quit ";
     let status = Line::from(Span::styled(
         help_text,
         Style::default().fg(TEXT_DIM).bg(BG),
