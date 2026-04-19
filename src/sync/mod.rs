@@ -1,12 +1,19 @@
-use anyhow::{Context, Result};
+mod download;
+mod progress;
+mod scraping;
+
+pub use download::fetch_and_store_image;
+pub use progress::SyncStats;
+#[cfg(test)]
+pub use scraping::{parse_article_page, parse_day_page};
+
+use anyhow::Result;
 use chrono::NaiveDate;
-use scraper::{Html, Selector};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 use tokio::task::JoinSet;
-use url::Url;
 
 use crate::app::{SyncMsg, SyncPhase, SyncPhaseKind};
 use crate::db::{Db, NewArticle, NewImage};
@@ -16,29 +23,17 @@ const REQUEST_DELAY: Duration = Duration::from_millis(500);
 const CLI_DELAY: Duration = Duration::from_millis(100);
 const ARTICLE_CONCURRENCY: usize = 4;
 const IMAGE_CONCURRENCY: usize = 8;
-const MAX_RETRIES: u32 = 3;
-const RETRY_BASE_DELAY: Duration = Duration::from_secs(5);
 
-pub struct SyncStats {
-    pub days_scraped: u32,
-    pub days_failed: u32,
-    pub articles_total: u32,
-    pub images_total: u32,
-    pub retries: u32,
-    pub articles_blocked: u32,
+struct PendingImage {
+    article_id: u32,
+    url: String,
+    alt_text: Option<String>,
 }
 
-impl SyncStats {
-    pub fn new() -> Self {
-        Self {
-            days_scraped: 0,
-            days_failed: 0,
-            articles_total: 0,
-            images_total: 0,
-            retries: 0,
-            articles_blocked: 0,
-        }
-    }
+fn progress_bar(pct: u32, width: usize) -> String {
+    let filled = (pct as usize * width / 100).min(width);
+    let empty = width - filled;
+    "█".repeat(filled) + &"░".repeat(empty)
 }
 
 pub async fn run_sync(
@@ -86,7 +81,7 @@ pub async fn run_sync(
         println!("\r  ✓ All {total_days} days already synced.          ");
         return Ok(SyncStats {
             days_scraped: skipped,
-            ..SyncStats::new()
+            ..Default::default()
         });
     }
 
@@ -112,7 +107,7 @@ pub async fn run_sync(
     println!();
 
     let client = Arc::new(client);
-    let mut stats = SyncStats::new();
+    let mut stats = SyncStats::default();
     let retry_counter = Arc::new(AtomicU32::new(0));
     let blocked_counter = Arc::new(AtomicU32::new(0));
 
@@ -147,7 +142,7 @@ pub async fn run_sync(
                 } else {
                     String::new()
                 };
-                let date_str = shared_date.lock().unwrap().clone();
+                let date_str = shared_date.lock().expect("date lock poisoned").clone();
                 let spin = spinner_frames[frame % spinner_frames.len()];
                 if date_str.is_empty() {
                     print!(
@@ -168,7 +163,7 @@ pub async fn run_sync(
     for date in &dates {
         let date_str = date.format("%Y-%m-%d").to_string();
         {
-            let mut d = shared_date.lock().unwrap();
+            let mut d = shared_date.lock().expect("date lock poisoned");
             *d = date_str.clone();
         }
 
@@ -211,12 +206,6 @@ pub async fn run_sync(
     Ok(stats)
 }
 
-fn progress_bar(pct: u32, width: usize) -> String {
-    let filled = (pct as usize * width / 100).min(width);
-    let empty = width - filled;
-    "█".repeat(filled) + &"░".repeat(empty)
-}
-
 async fn sync_day(
     client: Arc<reqwest::Client>,
     db: Arc<Db>,
@@ -241,8 +230,8 @@ async fn sync_day(
         date.format("%-d")
     );
 
-    let html = fetch_page(&client, &url, Some(&retry_counter)).await?;
-    let article_links = parse_day_page(&html)?;
+    let html = download::fetch_page(&client, &url, Some(&retry_counter)).await?;
+    let article_links = scraping::parse_day_page(&html)?;
 
     if article_links.is_empty() {
         return Ok((0, 0));
@@ -358,72 +347,14 @@ async fn sync_day(
     Ok((total_articles, total_images))
 }
 
-#[allow(dead_code)]
-struct ArticleLink {
-    url: String,
-    title: String,
-    time: Option<String>,
-}
-
-fn parse_day_page(html: &str) -> Result<Vec<ArticleLink>> {
-    let document = Html::parse_document(html);
-    let item_selector = Selector::parse("article.storyTextList__item").unwrap();
-    let link_selector = Selector::parse("a.storyTextList__itemLink").unwrap();
-    let title_selector = Selector::parse("span.storyTextList__itemTitle").unwrap();
-    let time_selector = Selector::parse("span.storyTextList__itemTime").unwrap();
-
-    let mut links = Vec::new();
-
-    for item in document.select(&item_selector) {
-        let Some(link_el) = item.select(&link_selector).next() else {
-            continue;
-        };
-        let href = match link_el.value().attr("href") {
-            Some(h) => h.to_string(),
-            None => continue,
-        };
-
-        let full_url = if href.starts_with("http") {
-            href
-        } else {
-            format!("{BASE_URL}{href}")
-        };
-
-        let title = item
-            .select(&title_selector)
-            .next()
-            .map(|el| el.text().collect::<String>().trim().to_string())
-            .unwrap_or_default();
-
-        let time = item
-            .select(&time_selector)
-            .next()
-            .map(|el| el.text().collect::<String>().trim().to_string());
-
-        links.push(ArticleLink {
-            url: full_url,
-            title,
-            time,
-        });
-    }
-
-    Ok(links)
-}
-
-struct PendingImage {
-    article_id: u32,
-    url: String,
-    alt_text: Option<String>,
-}
-
 async fn scrape_article_metadata(
     client: &reqwest::Client,
     db: &Db,
-    link: &ArticleLink,
+    link: &scraping::ArticleLink,
     retry_counter: &AtomicU32,
 ) -> Result<(u32, Vec<PendingImage>)> {
-    let html = fetch_page(client, &link.url, Some(retry_counter)).await?;
-    let parsed = parse_article_page(&html, &link.url)?;
+    let html = download::fetch_page(client, &link.url, Some(retry_counter)).await?;
+    let parsed = scraping::parse_article_page(&html, &link.url)?;
 
     let article_id = db.insert_article(&NewArticle {
         url: &link.url,
@@ -453,7 +384,7 @@ async fn download_and_store_image(
     db: &Db,
     pending: PendingImage,
 ) -> Result<()> {
-    let image_data = fetch_image(client, &pending.url).await.ok();
+    let image_data = download::fetch_image(client, &pending.url).await.ok();
     let blob_data = image_data.as_deref();
 
     let (width, height) = if let Some(data) = blob_data {
@@ -480,160 +411,6 @@ async fn download_and_store_image(
     Ok(())
 }
 
-struct ParsedArticle {
-    title: String,
-    section: Option<String>,
-    author: Option<String>,
-    published_at: String,
-    content_text: Option<String>,
-    content_html: Option<String>,
-    images: Vec<ParsedImage>,
-}
-
-struct ParsedImage {
-    url: String,
-    alt_text: Option<String>,
-}
-
-fn parse_article_page(html: &str, article_url: &str) -> Result<ParsedArticle> {
-    let document = Html::parse_document(html);
-
-    let title = document
-        .select(&Selector::parse("meta[property='og:title']").unwrap())
-        .next()
-        .and_then(|el| el.value().attr("content"))
-        .unwrap_or("")
-        .to_string();
-
-    let section = document
-        .select(&Selector::parse("meta[property='article:section']").unwrap())
-        .next()
-        .and_then(|el| el.value().attr("content"))
-        .map(|s| s.to_string());
-
-    let published_at = document
-        .select(&Selector::parse("meta[property='article:published_time']").unwrap())
-        .next()
-        .and_then(|el| el.value().attr("content"))
-        .unwrap_or("")
-        .to_string();
-
-    let author = document
-        .select(&Selector::parse("div.authorModule").unwrap())
-        .next()
-        .map(|el| el.text().collect::<String>().trim().to_string());
-
-    let paragraph_selector = Selector::parse("p.paragraph.textModule").unwrap();
-    let paragraphs: Vec<String> = document
-        .select(&paragraph_selector)
-        .map(|p| p.text().collect::<String>().trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
-
-    let content_text = if paragraphs.is_empty() {
-        None
-    } else {
-        Some(paragraphs.join("\n\n"))
-    };
-
-    let body_selector = Selector::parse("div.articleBody").unwrap();
-    let content_html = document
-        .select(&body_selector)
-        .next()
-        .map(|el| el.inner_html());
-
-    let img_selector = Selector::parse("img.photoModule__visual").unwrap();
-    let base = Url::parse(BASE_URL)?;
-    let article_base = Url::parse(article_url)?;
-
-    let images: Vec<ParsedImage> = document
-        .select(&img_selector)
-        .filter_map(|img| {
-            let src = img
-                .value()
-                .attr("data-src")
-                .or_else(|| img.value().attr("src"))?;
-            let resolved = if src.starts_with("http") {
-                src.to_string()
-            } else {
-                base.join(src)
-                    .or_else(|_| article_base.join(src))
-                    .ok()?
-                    .to_string()
-            };
-            let alt_text = img.value().attr("alt").map(|s| s.to_string());
-            Some(ParsedImage {
-                url: resolved,
-                alt_text,
-            })
-        })
-        .collect();
-
-    Ok(ParsedArticle {
-        title,
-        section,
-        author,
-        published_at,
-        content_text,
-        content_html,
-        images,
-    })
-}
-
-async fn fetch_page(
-    client: &reqwest::Client,
-    url: &str,
-    retry_counter: Option<&AtomicU32>,
-) -> Result<String> {
-    tracing::debug!("Fetching {url}");
-    for attempt in 0..=MAX_RETRIES {
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .with_context(|| format!("Failed to fetch {url}"))?;
-        let status = response.status();
-        if status.is_success() {
-            let text = response
-                .text()
-                .await
-                .with_context(|| format!("Failed to read response from {url}"))?;
-            return Ok(text);
-        }
-        if (status.as_u16() == 403 || status.as_u16() == 429) && attempt < MAX_RETRIES {
-            if let Some(counter) = retry_counter {
-                counter.fetch_add(1, Ordering::Relaxed);
-            }
-            let base_delay = RETRY_BASE_DELAY * 2u32.saturating_pow(attempt);
-            let jitter = Duration::from_millis(rand::random::<u64>() % 3000);
-            let delay = base_delay + jitter;
-            tracing::debug!("HTTP {status} for {url}, retrying in {delay:?}...");
-            tokio::time::sleep(delay).await;
-            continue;
-        }
-        anyhow::bail!("HTTP {status} for {url}");
-    }
-    unreachable!()
-}
-
-async fn fetch_image(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
-    tracing::debug!("Fetching image {url}");
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("Failed to fetch image {url}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        anyhow::bail!("HTTP {status} for image {url}");
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .with_context(|| format!("Failed to read image from {url}"))?;
-    Ok(bytes.to_vec())
-}
-
 pub async fn sync_single_day_with_progress(
     db: Arc<Db>,
     date: NaiveDate,
@@ -657,7 +434,7 @@ pub async fn sync_single_day_with_progress(
         db.clone(),
         &date,
         Some(&tx),
-        false,
+        true,
         false,
         retry_counter,
     )
@@ -678,56 +455,85 @@ pub async fn sync_single_day_with_progress(
     }
 }
 
-pub async fn fetch_and_store_image(db: &Db, image_id: u32, url: &str) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .cookie_store(true)
-        .user_agent(
-            "Mozilla/5.0 (compatible; lapresse-tui/0.1; +https://github.com/halfguru/lapresse-tui)",
-        )
-        .build()?;
-
-    let image_data = fetch_image(&client, url).await?;
-    let (width, height) = image::ImageReader::new(std::io::Cursor::new(&image_data))
-        .with_guessed_format()
-        .ok()
-        .and_then(|reader| reader.into_dimensions().ok())
-        .map(|(w, h)| (Some(w), Some(h)))
-        .unwrap_or((None, None));
-
-    db.update_image_data(image_id, &image_data, width, height)?;
-    Ok(())
-}
-
 #[cfg(test)]
-pub fn parse_day_page_for_test(html: &str) -> Result<Vec<(String, String, Option<String>)>> {
-    let links = parse_day_page(html)?;
-    Ok(links
-        .into_iter()
-        .map(|l| (l.url, l.title, l.time))
-        .collect())
-}
+mod tests {
+    use super::*;
 
-#[cfg(test)]
-#[allow(clippy::type_complexity)]
-pub fn parse_article_page_for_test(
-    html: &str,
-    url: &str,
-) -> Result<(
-    String,
-    Option<String>,
-    Option<String>,
-    String,
-    Option<String>,
-    Vec<(String, Option<String>)>,
-)> {
-    let p = parse_article_page(html, url)?;
-    let images = p.images.into_iter().map(|i| (i.url, i.alt_text)).collect();
-    Ok((
-        p.title,
-        p.section,
-        p.author,
-        p.published_at,
-        p.content_text,
-        images,
-    ))
+    #[test]
+    fn sync_parse_day_page() {
+        let html = r#"
+        <html><body>
+        <article class="storyTextList__item">
+            <a class="storyTextList__itemLink" href="/actualites/test-article">
+                <span class="storyTextList__itemTitle">Test Article Title</span>
+            </a>
+            <span class="storyTextList__itemTime">10:30</span>
+        </article>
+        <article class="storyTextList__item">
+            <a class="storyTextList__itemLink" href="https://www.lapresse.ca/sports/other">
+                <span class="storyTextList__itemTitle">Other Article</span>
+            </a>
+        </article>
+        <div class="not-an-article">ignore me</div>
+        </body></html>
+        "#;
+
+        let links = parse_day_page(html).unwrap();
+        assert_eq!(links.len(), 2);
+        assert_eq!(
+            links[0].url,
+            "https://www.lapresse.ca/actualites/test-article"
+        );
+        assert_eq!(links[0].title, "Test Article Title");
+        assert_eq!(links[1].url, "https://www.lapresse.ca/sports/other");
+        assert_eq!(links[1].title, "Other Article");
+    }
+
+    #[test]
+    fn sync_parse_article_page() {
+        let html = r#"
+        <html><head>
+            <meta property="og:title" content="Breaking News in Montreal">
+            <meta property="article:section" content="Actualites">
+            <meta property="article:published_time" content="2025-06-15T10:30:00-04:00">
+        </head><body>
+            <div class="authorModule">Jean Tremblay</div>
+            <div class="articleBody">
+                <p class="paragraph textModule">First paragraph of the article.</p>
+                <p class="paragraph textModule">Second paragraph here.</p>
+            </div>
+            <img class="photoModule__visual" src="https://images.lapresse.ca/photo.jpg" alt="A photo">
+        </body></html>
+        "#;
+
+        let parsed = parse_article_page(html, "https://lapresse.ca/test").unwrap();
+        assert_eq!(parsed.title, "Breaking News in Montreal");
+        assert_eq!(parsed.section, Some("Actualites".to_string()));
+        assert_eq!(parsed.author, Some("Jean Tremblay".to_string()));
+        assert_eq!(parsed.published_at, "2025-06-15T10:30:00-04:00");
+        assert!(
+            parsed
+                .content_text
+                .as_ref()
+                .unwrap()
+                .contains("First paragraph")
+        );
+        assert!(
+            parsed
+                .content_text
+                .as_ref()
+                .unwrap()
+                .contains("Second paragraph")
+        );
+        assert_eq!(parsed.images.len(), 1);
+        assert_eq!(parsed.images[0].url, "https://images.lapresse.ca/photo.jpg");
+        assert_eq!(parsed.images[0].alt_text, Some("A photo".to_string()));
+    }
+
+    #[test]
+    fn sync_parse_empty_day_page() {
+        let html = "<html><body><p>No articles today</p></body></html>";
+        let links = parse_day_page(html).unwrap();
+        assert!(links.is_empty());
+    }
 }
