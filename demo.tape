@@ -5,7 +5,7 @@ Set Height 700
 Set Padding 20
 Set Theme "Catppuccin Mocha"
 
-Type "./target/release/lapresse-tui"
+Type "lapresse-tui"
 Enter
 Sleep 13s
 
