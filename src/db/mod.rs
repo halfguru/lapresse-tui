@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 const SCHEMA_SQL: &str = include_str!("../../migrations/V1__initial_schema.sql");
+const V2_MIGRATION: &str = include_str!("../../migrations/V2__add_content_stats.sql");
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -24,6 +25,12 @@ impl Db {
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
         )?;
         conn.execute_batch(SCHEMA_SQL)?;
+        for stmt in V2_MIGRATION.split(';') {
+            let stmt = stmt.trim();
+            if !stmt.is_empty() {
+                conn.execute(stmt, []).ok();
+            }
+        }
         conn.execute(
             "UPDATE sync_state SET status = 'pending' WHERE status = 'in_progress'",
             [],
@@ -96,10 +103,15 @@ impl Db {
     }
 
     pub fn insert_article(&self, article: &NewArticle) -> Result<u32> {
+        let char_count = article.content_text.as_ref().map(|t| t.len() as i64);
+        let word_count = article
+            .content_text
+            .as_ref()
+            .map(|t| t.split_whitespace().count() as i64);
         let conn = self.conn.lock().expect("db connection poisoned");
         conn.execute(
-            "INSERT OR IGNORE INTO articles (url, title, section, author, published_at, content_text, content_html) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![article.url, article.title, article.section, article.author, article.published_at, article.content_text, article.content_html],
+            "INSERT OR IGNORE INTO articles (url, title, section, author, published_at, content_text, content_html, char_count, word_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![article.url, article.title, article.section, article.author, article.published_at, article.content_text, article.content_html, char_count, word_count],
         )?;
         let id: u32 = conn.query_row(
             "SELECT id FROM articles WHERE url = ?1",
